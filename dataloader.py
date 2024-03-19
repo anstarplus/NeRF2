@@ -3,7 +3,8 @@
 """
 import os
 import random
-
+import tensorflow as tf
+import json
 import imageio
 import numpy as np
 import pandas as pd
@@ -368,4 +369,126 @@ class CSI_dataset(Dataset):
         return len(self.dataset_index) * self.n_bs
 
 
-dataset_dict = {"rfid": Spectrum_dataset, "ble": BLE_dataset, "mimo": CSI_dataset}
+class DichasusDC01Dataset(Dataset):
+    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None):
+        self.datadir = datadir
+        self.csidata_dir = os.path.join(datadir, 'dichasus-dc01.tfrecords')
+        self.bs_pos_dir = os.path.join(datadir, 'base_station.yml')
+        self.dataset_index = np.loadtxt(indexdir, dtype=int)
+        self.beta_res, self.alpha_res = 9, 36  # resulution of rays
+
+
+        # load base station position
+        with open(os.path.join(self.bs_pos_dir)) as f:
+            bs_pos_dict = yaml.safe_load(f)
+            self.bs_pos = torch.tensor([bs_pos_dict["base_station"]], dtype=torch.float32).squeeze()
+            self.bs_pos = self.bs_pos / scale_worldsize
+            self.n_bs = len(self.bs_pos)
+
+        # load CSI data
+        self.dataset = self._load_dataset(datadir, calibrate, y_filter)
+        self.calibrate = calibrate
+        self.y_filter = y_filter
+
+        ## generate rays origin at gateways
+        bs_ray_o, bs_rays_d = self.gen_rays_gateways()
+        bs_ray_o = rearrange(bs_ray_o, 'n g c -> n (g c)')   # [n_bs, 1, 3] --> [n_bs, 3]
+        bs_rays_d = rearrange(bs_rays_d, 'n g c -> n (g c)') # [n_bs, n_rays, 3] --> [n_bs, n_rays*3]
+
+        nn_inputs = torch.tensor(np.zeros((len(self), 3)), dtype=torch.float32)
+        nn_labels = torch.tensor(np.zeros((len(self), 1024*64)), dtype=torch.float32)
+
+        # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
+        for csi, pos in self.dataset:
+            self.nn_inputs.append(pos.numpy())
+            self.nn_labels.append(csi.numpy())
+
+    def _load_dataset(self, tfrecord_path, calibrate=True, y_filter=None):
+        raw_dataset = tf.data.TFRecordDataset(self.tfrecord_path)
+
+        feature_description = {
+            "cfo": tf.io.FixedLenFeature([], tf.string, default_value=''),
+            "csi": tf.io.FixedLenFeature([], tf.string, default_value=''),
+            "gt-interp-age-tachy": tf.io.FixedLenFeature([], tf.float32, default_value=0),
+            "pos-tachy": tf.io.FixedLenFeature([], tf.string, default_value=''),
+            "snr": tf.io.FixedLenFeature([], tf.string, default_value=''),
+            "time": tf.io.FixedLenFeature([], tf.float32, default_value=0),
+        }
+
+        def record_parse_function(proto):
+            record = tf.io.parse_single_example(proto, feature_description)
+
+            # Process and convert TensorFlow tensors to NumPy arrays here
+            cfo = tf.io.parse_tensor(record["cfo"], out_type=tf.float32).numpy()
+            csi = tf.io.parse_tensor(record["csi"], out_type=tf.float32).numpy()
+            gt_interp_age_tachy = record["gt-interp-age-tachy"].numpy()
+            pos_tachy = tf.io.parse_tensor(record["pos-tachy"], out_type=tf.float64).numpy()
+            snr = tf.io.parse_tensor(record["snr"], out_type=tf.float32).numpy()
+            time = record["time"].numpy()
+
+            return cfo, csi
+
+        def apply_calibration(csi, pos):
+            """Apply STO and CPO calibration"""
+            sto_offset = tf.tensordot(tf.constant(offsets["sto"]),
+                                      2 * np.pi * tf.range(tf.shape(csi)[1], dtype=np.float32) / tf.cast(
+                                          tf.shape(csi)[1], np.float32), axes=0)
+            cpo_offset = tf.tensordot(tf.constant(offsets["cpo"]), tf.ones(tf.shape(csi)[1], dtype=np.float32), axes=0)
+            csi = tf.multiply(csi, tf.exp(tf.complex(0.0, sto_offset + cpo_offset)))
+            return csi, pos
+
+        dataset = raw_dataset.map(record_parse_function, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+        if calibrate:
+            calibrate_path = os.path.join(self.datadir, "reftx-offsets-dichasus-dc01.json")
+            with open(calibrate_path, "r") as offsetfile:
+                offsets = json.load(offsetfile)
+
+            dataset = dataset.map(apply_calibration)
+
+        if y_filter is not None:
+            def position_filter(csi, pos):
+                return tf.logical_and(pos[1] > y_filter[0], pos[1] < y_filter[1])
+
+            dataset = dataset.filter(position_filter)
+
+        return dataset
+
+
+    def gen_rays_gateways(self):
+        """generate sample rays origin at gateways, for each gateways, we sample 36x9 rays
+
+        Returns
+        -------
+        r_o : tensor. [n_bs, 1, 3]. The origin of rays
+        r_d : tensor. [n_bs, n_rays, 3]. The direction of rays, unit vector
+        """
+        alphas = torch.linspace(0, 350, self.alpha_res) / 180 * np.pi
+        betas = torch.linspace(10, 90, self.beta_res) / 180 * np.pi
+        alphas = alphas.repeat(self.beta_res)    # [0,1,2,3,....]
+        betas = betas.repeat_interleave(self.alpha_res)    # [0,0,0,0,...]
+
+        radius = 1
+        x = radius * torch.cos(alphas) * torch.cos(betas)  # (1*360)
+        y = radius * torch.sin(alphas) * torch.cos(betas)
+        z = radius * torch.sin(betas)
+
+        r_d = torch.stack([x, y, z], axis=0).T  # [9*36, 2]
+        r_d = r_d.expand([self.n_bs, self.beta_res * self.alpha_res, 2])  # [n_bs, 9*36, 3]
+        r_o = self.bs_pos.unsqueeze(1) # [n_bs, 1, 2]
+        r_o, r_d = r_o.contiguous(), r_d.contiguous()
+
+        return r_o, r_d
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        csi, pos = self.data[idx]
+        # Convert numpy arrays to PyTorch tensors
+        csi_tensor = torch.from_numpy(csi)
+        pos_tensor = torch.from_numpy(pos)
+        return pos_tensor, csi_tensor
+
+
+dataset_dict = {"rfid": Spectrum_dataset, "ble": BLE_dataset, "mimo": CSI_dataset, "dichasus": DichasusDC01Dataset}
