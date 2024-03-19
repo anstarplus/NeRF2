@@ -154,6 +154,10 @@ class NeRF2_Runner():
                         predict_downlink = self.renderer.render_csi(uplink, rays_o, rays_d)
                         predict_downlink = torch.concat((predict_downlink.real, predict_downlink.imag), dim=-1)
                         loss = sig2mse(predict_downlink, train_label)
+                    elif self.dataset_type == 'dichasus':
+                        tx_o, rays_o, rays_d = train_input[:, :3], train_input[:, 3:6], train_input[:, 6:]
+                        predict_rssi = self.renderer.render_rssi(tx_o, rays_o, rays_d)
+                        loss = sig2mse(predict_rssi, train_label.view(-1))
 
 
                     self.optimizer.zero_grad()
@@ -281,10 +285,10 @@ class NeRF2_Runner():
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/mimo-csi.yml', help='config file path')
+    parser.add_argument('--config', type=str, default='configs/dichasus.yml', help='config file path')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--dataset_type', type=str, default='mimo')
+    parser.add_argument('--dataset_type', type=str, default='dichasus-cross-link')
     args = parser.parse_args()
     torch.cuda.set_device(args.gpu)
 
@@ -308,3 +312,7 @@ if __name__ == '__main__':
             worker.eval_network_rssi()
         elif args.dataset_type == 'mimo':
             worker.eval_network_csi()
+        elif args.dataset_type == 'dichasus-cross-link':
+            worker.eval_network_rssi()
+        elif args.dataset_type == 'dichasus-cross-freq':
+            worker.eval_network_rssi()
