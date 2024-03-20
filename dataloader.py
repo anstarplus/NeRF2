@@ -249,7 +249,7 @@ def amplitude2rssi(amplitude):
     return -100 * (1 - amplitude)
 
 
-def split_dataset(datadir, ratio=0.8, dataset_type='rfid'):
+def split_dataset(datadir, ratio=0.8, dataset_type='rfid', num_samples=1000):
     """random shuffle train/test set
     """
     index = []
@@ -267,10 +267,10 @@ def split_dataset(datadir, ratio=0.8, dataset_type='rfid'):
         index = [i for i in range(torch.load(csi_dir).shape[0])]
         random.shuffle(index)
     elif dataset_type == "dichasus-crosslink":
-        index = np.arange(0, 3000)
+        index = np.arange(0, num_samples)
         random.shuffle(index)
     elif dataset_type == "dichasus-fdd":
-        index = np.arange(0, 3000)
+        index = np.arange(0, num_samples)
         random.shuffle(index)
 
     train_len = int(len(index) * ratio)
@@ -585,8 +585,9 @@ class CSI_dataset(Dataset):
 
 
 class DichasusDC01Dataset_crosslink(Dataset):
-    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None):
+    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None, num_samples=1000):
         self.datadir = datadir
+        self.num_samples = num_samples
         self.csidata_dir = os.path.join(datadir, 'dichasus-dc01.tfrecords')
         self.bs_pos_dir = os.path.join(datadir, 'base-station.yml')
         self.dataset_index = np.loadtxt(indexdir, dtype=int)
@@ -622,11 +623,12 @@ class DichasusDC01Dataset_crosslink(Dataset):
         self.dataset = self.dataset.shuffle(seed=42, reshuffle_each_iteration=False, buffer_size=1024).batch(1)
         dataset_iter = iter(self.dataset)
 
-        NUM_data = 3000
+        NUM_data = self.num_samples
         nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 3 + 3 + 3 * self.alpha_res * self.beta_res)),
                                  dtype=torch.float32)  # n_bs = 2
         nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 1024 * 32 * 2)), dtype=torch.float32)
-
+        csi_collection = []
+        pos_collection = []
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
         for it_num in tqdm(range(NUM_data)):
             next_item = next(dataset_iter, None)
@@ -638,6 +640,13 @@ class DichasusDC01Dataset_crosslink(Dataset):
             pos = torch.from_numpy(pos.numpy()).repeat(self.n_bs, 1).squeeze()
             # [1, num_tx (2) * num_tx_ant (32) = 64, num_subcarriers = 1024]
             csi = torch.from_numpy(csi.numpy()).squeeze()
+            csi_collection.append(csi)
+            pos_collection.append(pos)
+
+        csi_collection = self.normalize_csi(torch.stack(csi_collection, dim=0))
+        for it_num in tqdm(range(NUM_data)):
+            csi = csi_collection[it_num]
+            pos = pos_collection[it_num]
             csi_real, csi_imag = torch.real(csi), torch.imag(csi)
             csi_ = torch.cat([csi_real, csi_imag], dim=-1)
             nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([pos, self.bs_ray_o, self.bs_rays_d],
@@ -646,6 +655,14 @@ class DichasusDC01Dataset_crosslink(Dataset):
 
         self.nn_inputs = nn_inputs[self.dataset_index]
         self.nn_labels = nn_labels[self.dataset_index]
+
+    def normalize_csi(self, csi):
+        self.csi_max = torch.max(abs(csi))
+        return csi / self.csi_max
+
+    def denormalize_csi(self, csi):
+        assert self.csi_max is not None, "Please normalize csi first"
+        return csi * self.csi_max
 
     def _load_dataset(self, tfrecord_path, calibrate=True, y_filter=None):
         raw_dataset = tf.data.TFRecordDataset(self.csidata_dir)
@@ -729,9 +746,9 @@ class DichasusDC01Dataset_crosslink(Dataset):
         return self.nn_inputs[idx], self.nn_labels[idx]
 
 class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
-    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None, new_param=None):
+    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None, num_samples=1000):
         # Initialize the superclass with some of the same parameters
-        super().__init__(datadir, indexdir, scale_worldsize, calibrate, y_filter)
+        super().__init__(datadir, indexdir, scale_worldsize, calibrate, y_filter, num_samples=num_samples)
 
     def _gen_dataset(self):
         print("FDD dataset generation")
@@ -739,11 +756,12 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
         self.dataset = self.dataset.shuffle(seed=42, reshuffle_each_iteration=False, buffer_size=1024).batch(1)
         dataset_iter = iter(self.dataset)
 
-        NUM_data = 3000
+        NUM_data = self.num_samples
         nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 32 * 2 + 3 + 3 * self.alpha_res * self.beta_res)),
                                  dtype=torch.float32)  # n_bs = 2
         nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 32 * 2)), dtype=torch.float32)
 
+        csi_collection = []
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
         for it_num in tqdm(range(NUM_data)):
             next_item = next(dataset_iter, None)
@@ -755,9 +773,12 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
             pos = torch.from_numpy(pos.numpy()).repeat(self.n_bs, 1).squeeze()
             # [num_tx (2) * num_tx_ant (32) = 64, num_subcarriers = 1024]
             csi = torch.from_numpy(csi.numpy()).squeeze()
-            # csi_data = self.normalize_csi(csi)
-            csi_data = csi
-            uplink, downlink = csi[..., :512], csi_data[..., 512:]
+            csi_collection.append(csi)
+
+        csi_collection = self.normalize_csi(torch.stack(csi_collection, dim=0))
+        for it_num in tqdm(range(NUM_data)):
+            csi = csi_collection[it_num]
+            uplink, downlink = csi[..., :512], csi[..., 512:]
             up_real, up_imag = torch.real(uplink), torch.imag(uplink)
             down_real, down_imag = torch.real(downlink), torch.imag(downlink)
             uplink = torch.cat([up_real, up_imag], dim=-1)  # [N*32, 512*2]
@@ -768,8 +789,8 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
                                                                                 dim=-1)  # [n_bs, 512+3+3*36*9]
             nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = downlink.view(self.n_bs, 2 * 32 * 512)
 
-        self.nn_inputs = nn_inputs
-        self.nn_labels = nn_labels
+        self.nn_inputs = nn_inputs[self.dataset_index]
+        self.nn_labels = nn_labels[self.dataset_index]
 
 
 
@@ -782,7 +803,10 @@ if __name__ == "__main__":
     datadir = os.path.join("/home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords")
     train_index = os.path.join(datadir, "train_index.txt")
     test_index = os.path.join(datadir, "test_index.txt")
+    num_samples = 1000
     if not os.path.exists(train_index) or not os.path.exists(test_index):
-        split_dataset(datadir, ratio=0.8, dataset_type='dichasus-crosslink')
-    # dataset = DichasusDC01Dataset_crosslink(datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=[-5,5])
-    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 5])
+        split_dataset(datadir, ratio=0.8, dataset_type='dichasus-crosslink', num_samples=num_samples)
+    #dataset = DichasusDC01Dataset_crosslink(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5,5],
+                                            #num_samples=num_samples)
+    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 5],
+    num_samples=num_samples)
