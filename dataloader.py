@@ -602,11 +602,14 @@ class DichasusDC01Dataset_crosslink(Dataset):
         with open(os.path.join(self.bs_pos_dir)) as f:
             bs_pos_dict = yaml.safe_load(f)
             bs_pos = tf.constant(bs_pos_dict["base_station"])
-            bs_pos_1 = change_coordinate_system(bs_pos[0, :], center=self.center, rot_mat=self.rot_mat)
-            bs_pos_2 = change_coordinate_system(bs_pos[1, :], center=self.center, rot_mat=self.rot_mat)
-            bs_pos_1 = torch.from_numpy(bs_pos_1.numpy())
-            bs_pos_2 = torch.from_numpy(bs_pos_2.numpy())
-            bs_pos = torch.stack([bs_pos_1, bs_pos_2]).squeeze()
+            self.n_bs = len(bs_pos)
+            bos_pos_collection = []
+            for i in range(len(bs_pos)):
+                bs_pos_ = change_coordinate_system(bs_pos[i, :], center=self.center, rot_mat=self.rot_mat)
+                bs_pos_ = torch.from_numpy(bs_pos_.numpy())
+                bos_pos_collection.append(bs_pos_)
+            bs_pos = torch.stack(bos_pos_collection).squeeze()
+            # print("bs_pos", bs_pos)
             self.bs_pos = bs_pos / scale_worldsize
             self.n_bs = len(bs_pos)
 
@@ -626,7 +629,7 @@ class DichasusDC01Dataset_crosslink(Dataset):
         NUM_data = self.num_samples
         nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 3 + 3 + 3 * self.alpha_res * self.beta_res)),
                                  dtype=torch.float32)  # n_bs = 2
-        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 1024 * 32 * 2)), dtype=torch.float32)
+        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 1024 * 2)), dtype=torch.float32)
         csi_collection = []
         pos_collection = []
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
@@ -651,7 +654,7 @@ class DichasusDC01Dataset_crosslink(Dataset):
             csi_ = torch.cat([csi_real, csi_imag], dim=-1)
             nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([pos, self.bs_ray_o, self.bs_rays_d],
                                                                                 dim=-1)  # [n_bs, 52+3+3*36*9]
-            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = csi_.view(self.n_bs, 2 * 32 * 1024)
+            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = csi_.view(self.n_bs, 2 * 1024)
 
         self.nn_inputs = nn_inputs[self.dataset_index]
         self.nn_labels = nn_labels[self.dataset_index]
@@ -757,9 +760,9 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
         dataset_iter = iter(self.dataset)
 
         NUM_data = self.num_samples
-        nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 32 * 2 + 3 + 3 * self.alpha_res * self.beta_res)),
+        nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 2 + 3 + 3 * self.alpha_res * self.beta_res)),
                                  dtype=torch.float32)  # n_bs = 2
-        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 32 * 2)), dtype=torch.float32)
+        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 2)), dtype=torch.float32)
 
         csi_collection = []
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
@@ -781,13 +784,12 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
             uplink, downlink = csi[..., :512], csi[..., 512:]
             up_real, up_imag = torch.real(uplink), torch.imag(uplink)
             down_real, down_imag = torch.real(downlink), torch.imag(downlink)
-            uplink = torch.cat([up_real, up_imag], dim=-1)  # [N*32, 512*2]
-            downlink = torch.cat([down_real, down_imag], dim=-1)  # [N*32, 512*2]
-
-            nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([uplink.view(self.n_bs, 2 * 32 * 512),
+            uplink = torch.cat([up_real, up_imag], dim=-1)  # [64, 512*2]
+            downlink = torch.cat([down_real, down_imag], dim=-1)  # [64, 512*2]
+            nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([uplink,
                                                                                  self.bs_ray_o, self.bs_rays_d],
-                                                                                dim=-1)  # [n_bs, 512+3+3*36*9]
-            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = downlink.view(self.n_bs, 2 * 32 * 512)
+                                                                                dim=-1)  # [n_bs, 512*2+3+3*36*9]
+            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = downlink.view(self.n_bs, 2 * 512)
 
         self.nn_inputs = nn_inputs[self.dataset_index]
         self.nn_labels = nn_labels[self.dataset_index]
@@ -806,7 +808,7 @@ if __name__ == "__main__":
     num_samples = 1000
     if not os.path.exists(train_index) or not os.path.exists(test_index):
         split_dataset(datadir, ratio=0.8, dataset_type='dichasus-crosslink', num_samples=num_samples)
-    #dataset = DichasusDC01Dataset_crosslink(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5,5],
-                                            #num_samples=num_samples)
-    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 10],
-    num_samples=num_samples)
+    dataset = DichasusDC01Dataset_crosslink(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5,5],
+                                            num_samples=num_samples)
+    # dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 10],
+    # num_samples=num_samples)
