@@ -28,7 +28,7 @@ from utils.logger import logger_config
 
 class NeRF2_Runner():
 
-    def __init__(self, mode, dataset_type, **kwargs) -> None:
+    def __init__(self, mode, dataset_type, gpu, **kwargs) -> None:
 
         kwargs_path = kwargs['path']
         kwargs_render = kwargs['render']
@@ -40,7 +40,7 @@ class NeRF2_Runner():
         self.expname = kwargs_path['expname']
         self.datadir = kwargs_path['datadir']
         self.logdir = kwargs_path['logdir']
-        self.devices = torch.device('cuda')
+        self.devices = torch.device(f'cuda:{gpu}')
 
         ## Logger
         log_filename = "logger.log"
@@ -82,24 +82,26 @@ class NeRF2_Runner():
         train_index = os.path.join(self.datadir, "train_index.txt")
         test_index = os.path.join(self.datadir, "test_index.txt")
 
-        if dataset_type == 'dichasus-crosslink' or dataset_type == "dichasus-fdd":
-            self.num_samples = kwargs_train['num_samples']
-            if not os.path.exists(train_index) or not os.path.exists(test_index):
-                split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type, num_samples=self.num_samples)
-            self.logger.info("Loading training set..."+dataset_type)
-            self.train_set = dataset(self.datadir, train_index, self.scale_worldsize, calibrate=True,
-                                     y_filter=[-5, 10], num_samples=self.num_samples)
-            self.logger.info("Loading test set..."+dataset_type)
-            self.test_set = dataset(self.datadir, test_index, self.scale_worldsize, calibrate=True,
-                                     y_filter=[-5, 10], num_samples=self.num_samples)
-        else:
-            if not os.path.exists(train_index) or not os.path.exists(test_index):
-                split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type)
-            self.logger.info("Loading training set...")
-            self.train_set = dataset(self.datadir, train_index, self.scale_worldsize)
-            self.logger.info("Loading test set...")
-            self.test_set = dataset(self.datadir, test_index, self.scale_worldsize)
+        with tf.device('/CPU:0'):
+            if dataset_type == 'dichasus-crosslink' or dataset_type == "dichasus-fdd":
+                self.num_samples = kwargs_train['num_samples']
+                if not os.path.exists(train_index) or not os.path.exists(test_index):
+                    split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type, num_samples=self.num_samples)
+                self.logger.info("Loading training set..."+dataset_type)
+                self.train_set = dataset(self.datadir, train_index, self.scale_worldsize, calibrate=True,
+                                        y_filter=[-5, 10], num_samples=self.num_samples)
+                self.logger.info("Loading test set..."+dataset_type)
+                self.test_set = dataset(self.datadir, test_index, self.scale_worldsize, calibrate=True,
+                                        y_filter=[-5, 10], num_samples=self.num_samples)
+            else:
+                if not os.path.exists(train_index) or not os.path.exists(test_index):
+                    split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type)
+                self.logger.info("Loading training set...")
+                self.train_set = dataset(self.datadir, train_index, self.scale_worldsize)
+                self.logger.info("Loading test set...")
+                self.test_set = dataset(self.datadir, test_index, self.scale_worldsize)
 
+        self.devices = torch.device(f'cuda:{gpu}')
         self.train_iter = DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True, num_workers=0)
         self.test_iter = DataLoader(self.test_set, batch_size=self.batch_size, shuffle=False, num_workers=0)
         self.logger.info("Train set size:%d, Test set size:%d", len(self.train_set), len(self.test_set))
@@ -147,7 +149,7 @@ class NeRF2_Runner():
         """
         self.logger.info("Start training. Current Iteration:%d", self.current_iteration)
         while self.current_iteration <= self.total_iterations:
-            with (tqdm(total=len(self.train_iter), desc=f"Iteration {self.current_iteration}/{self.total_iterations}") as pbar):
+            with tqdm(total=len(self.train_iter), desc=f"Iteration {self.current_iteration}/{self.total_iterations}") as pbar:
                 for train_input, train_label in self.train_iter:
                     if self.current_iteration > self.total_iterations:
                         break
@@ -340,10 +342,10 @@ class NeRF2_Runner():
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/dichasus-crosslink.yml', help='config file path')
+    parser.add_argument('--config', type=str, default='configs/dichasus-fdd.yml', help='config file path')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--dataset_type', type=str, default='dichasus-crosslink')
+    parser.add_argument('--dataset_type', type=str, default='dichasus-fdd')
     args = parser.parse_args()
     torch.cuda.set_device(args.gpu)
 
@@ -357,7 +359,7 @@ if __name__ == '__main__':
         os.makedirs(logdir, exist_ok=True)
         copyfile(args.config, os.path.join(logdir,'config.yml'))
 
-    worker = NeRF2_Runner(mode=args.mode, dataset_type=args.dataset_type, **kwargs)
+    worker = NeRF2_Runner(mode=args.mode, dataset_type=args.dataset_type, gpu=args.gpu, **kwargs)
     if args.mode == 'train':
         worker.train()
     elif args.mode == 'test':
