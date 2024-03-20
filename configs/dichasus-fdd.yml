@@ -8,11 +8,12 @@ path:
 
 ### rendering settings
 render:
-  mode: 'csi'
+  mode: 'csi_dichasus'
   near: 0
   far: 5
   n_samples: 32
   scale_worldsize: 1
+  num_carrier: 512
 
 
 ### training settings
@@ -36,7 +37,7 @@ networks:
   W: 256
   skips: [4]
   multires: {'pts': 10, 'view': 10, 'tx': 1}
-  input_dims: {'pts': 3, 'view': 3, 'tx': 52} # real 26, imag 26 for uplink
+  input_dims: {'pts': 3, 'view': 3, 'tx': 1024} # real 512, imag 512 for uplink
   is_embeded: {'pts': True, 'view': True, 'tx': False}
-  attn_output_dims: 52
-  sig_output_dims: 52
+  attn_output_dims: 1024
+  sig_output_dims: 1024

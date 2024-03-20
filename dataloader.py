@@ -16,7 +16,7 @@ from tqdm import tqdm
 from einops import rearrange
 import csv
 
-PI = 3.141592653589793
+PI = np.pi
 
 def change_coordinate_system(pos, center=None, rot_mat=None):
     """Transforms coordinates by applying an affine transformation
@@ -585,7 +585,7 @@ class CSI_dataset(Dataset):
 
 
 class DichasusDC01Dataset_crosslink(Dataset):
-    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None, num_samples=1000):
+    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None, num_samples=3000):
         self.datadir = datadir
         self.num_samples = num_samples
         self.csidata_dir = os.path.join(datadir, 'dichasus-dc01.tfrecords')
@@ -808,5 +808,5 @@ if __name__ == "__main__":
         split_dataset(datadir, ratio=0.8, dataset_type='dichasus-crosslink', num_samples=num_samples)
     #dataset = DichasusDC01Dataset_crosslink(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5,5],
                                             #num_samples=num_samples)
-    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 5],
+    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 10],
     num_samples=num_samples)

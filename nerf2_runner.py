@@ -161,7 +161,7 @@ class NeRF2_Runner():
                     elif self.dataset_type == 'dichasus-fdd':
                         uplink, rays_o, rays_d = train_input[:, :512 * 32 * 2], train_input[:, 512 * 32 * 2: 512 * 32 * 2 + 3], \
                                                     train_input[:, 512 * 32 * 2+3:]
-                        predict_downlink = self.renderer.render_csi_dichasus_fdd(uplink, rays_o, rays_d)
+                        predict_downlink = self.renderer.render_csi_dichasus(uplink, rays_o, rays_d)
                         predict_downlink = torch.concat((predict_downlink.real, predict_downlink.imag), dim=-1)
                         loss = sig2mse(predict_downlink, train_label)
 
@@ -285,6 +285,43 @@ class NeRF2_Runner():
                                                                               'gt_csi': all_gt_csi.cpu().numpy(),
                                                                               'snr': snr.cpu().numpy()})
 
+        def eval_network_csi_dichasus(self, num_carrier=1024, cross_link=False):
+            """test the model and save predicted csi values to a file
+            """
+            self.logger.info("Start evaluation")
+            self.nerf2_network.eval()
+
+            n_bs = self.test_set.n_bs  # number of base station antennas
+            n_data = len(self.test_set)  # number of test data
+
+            all_pred_csi = torch.zeros((n_data, num_carrier), dtype=torch.complex64)
+            all_gt_csi = torch.zeros((n_data, num_carrier), dtype=torch.complex64)
+            with (torch.no_grad()):
+                for idx, (test_input, test_label) in enumerate(self.test_iter):
+                    test_input, test_label = test_input.to(self.devices), test_label.to(self.devices)
+                    if cross_link:
+                        uplink, rays_o, rays_d = test_input[:, :3], test_input[:,3:6], \
+                                                                    test_input[:, num_carrier * 2 + 6:]
+                    else:
+                        uplink, rays_o, rays_d = test_input[:, :num_carrier*2], test_input[:, num_carrier*2:num_carrier*2+3], \
+                                                test_input[:, num_carrier*2+3:]
+                    predict_downlink = self.renderer.render_csi(uplink, rays_o, rays_d)  # [B, 26]
+                    gt_downlink = test_label[:, :num_carrier] + 1j * test_label[:, num_carrier:]
+                    predict_downlink = self.test_set.denormalize_csi(predict_downlink)
+                    gt_downlink = self.test_set.denormalize_csi(gt_downlink)
+
+                    all_pred_csi[idx * self.batch_size:(idx + 1) * self.batch_size] = predict_downlink
+                    all_gt_csi[idx * self.batch_size:(idx + 1) * self.batch_size] = gt_downlink
+
+            all_pred_csi = rearrange(all_pred_csi, '(n_data n_bs) channel -> n_data n_bs channel', n_bs=n_bs)
+            all_gt_csi = rearrange(all_gt_csi, '(n_data n_bs) channel -> n_data n_bs channel', n_bs=n_bs)
+            snr = csi2snr(all_pred_csi, all_gt_csi)
+            self.logger.info("Median SNR:%.2f", torch.median(snr))
+
+            scio.savemat(os.path.join(self.logdir, self.expname, "result.mat"), {'pred_csi': all_pred_csi.cpu().numpy(),
+                                                                                 'gt_csi': all_gt_csi.cpu().numpy(),
+                                                                                 'snr': snr.cpu().numpy()})
+
 
 
 
@@ -319,6 +356,6 @@ if __name__ == '__main__':
         elif args.dataset_type == 'mimo':
             worker.eval_network_csi()
         elif args.dataset_type == 'dichasus_crosslink':
-            worker.eval_network_csi()
+            worker.eval_network_csi_dichasus(num_carrier=1024, cross_link=True)
         elif args.dataset_type == 'dichasus-fdd':
-            worker.eval_network_csi()
+            worker.eval_network_csi_dichasus(num_carrier=512, cross_link=False)
