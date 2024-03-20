@@ -13,11 +13,12 @@ render:
   far: 5
   n_samples: 32
   scale_worldsize: 1
-  num_carrier: 1024
+  num_carriers: 1024
 
 
 ### training settings
 train:
+  num_samples: 3000
   lr: 1e-3
   weight_decay: 5e-5
   T_max: 10000

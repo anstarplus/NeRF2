@@ -81,12 +81,24 @@ class NeRF2_Runner():
         dataset = dataset_dict[dataset_type]
         train_index = os.path.join(self.datadir, "train_index.txt")
         test_index = os.path.join(self.datadir, "test_index.txt")
-        if not os.path.exists(train_index) or not os.path.exists(test_index):
-            split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type)
-        self.logger.info("Loading training set...")
-        self.train_set = dataset(self.datadir, train_index, self.scale_worldsize)
-        self.logger.info("Loading test set...")
-        self.test_set = dataset(self.datadir, test_index, self.scale_worldsize)
+
+        if dataset_type == 'dichasus-crosslink' or dataset_type == "dichasus-fdd":
+            self.num_samples = kwargs_train['num_samples']
+            if not os.path.exists(train_index) or not os.path.exists(test_index):
+                split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type, num_samples=self.num_samples)
+            self.logger.info("Loading training set..."+dataset_type)
+            self.train_set = dataset(self.datadir, train_index, self.scale_worldsize, calibrate=True,
+                                     y_filter=[-5, 10], num_samples=self.num_samples)
+            self.logger.info("Loading test set..."+dataset_type)
+            self.test_set = dataset(self.datadir, test_index, self.scale_worldsize, calibrate=True,
+                                     y_filter=[-5, 10], num_samples=self.num_samples)
+        else:
+            if not os.path.exists(train_index) or not os.path.exists(test_index):
+                split_dataset(self.datadir, ratio=0.8, dataset_type=dataset_type)
+            self.logger.info("Loading training set...")
+            self.train_set = dataset(self.datadir, train_index, self.scale_worldsize)
+            self.logger.info("Loading test set...")
+            self.test_set = dataset(self.datadir, test_index, self.scale_worldsize)
 
         self.train_iter = DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True, num_workers=0)
         self.test_iter = DataLoader(self.test_set, batch_size=self.batch_size, shuffle=False, num_workers=0)
@@ -156,12 +168,12 @@ class NeRF2_Runner():
                         loss = sig2mse(predict_downlink, train_label)
                     elif self.dataset_type == 'dichasus-crosslink':
                         tx_o, rays_o, rays_d = train_input[:, :3], train_input[:, 3:6], train_input[:, 6:]
-                        predict_csi = self.renderer.render_csi_dichasus(tx_o, rays_o, rays_d)
+                        predict_csi = self.renderer.render_csi(tx_o, rays_o, rays_d)
                         loss = sig2mse(predict_csi, train_label.view(-1))
                     elif self.dataset_type == 'dichasus-fdd':
                         uplink, rays_o, rays_d = train_input[:, :512 * 32 * 2], train_input[:, 512 * 32 * 2: 512 * 32 * 2 + 3], \
                                                     train_input[:, 512 * 32 * 2+3:]
-                        predict_downlink = self.renderer.render_csi_dichasus(uplink, rays_o, rays_d)
+                        predict_downlink = self.renderer.render_csi(uplink, rays_o, rays_d)
                         predict_downlink = torch.concat((predict_downlink.real, predict_downlink.imag), dim=-1)
                         loss = sig2mse(predict_downlink, train_label)
 
@@ -355,7 +367,7 @@ if __name__ == '__main__':
             worker.eval_network_rssi()
         elif args.dataset_type == 'mimo':
             worker.eval_network_csi()
-        elif args.dataset_type == 'dichasus_crosslink':
+        elif args.dataset_type == 'dichasus-crosslink':
             worker.eval_network_csi_dichasus(num_carrier=1024, cross_link=True)
         elif args.dataset_type == 'dichasus-fdd':
             worker.eval_network_csi_dichasus(num_carrier=512, cross_link=False)
