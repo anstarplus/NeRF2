@@ -156,13 +156,14 @@ class NeRF2_Runner():
                         loss = sig2mse(predict_downlink, train_label)
                     elif self.dataset_type == 'dichasus-crosslink':
                         tx_o, rays_o, rays_d = train_input[:, :3], train_input[:, 3:6], train_input[:, 6:]
-                        predict_rssi = self.renderer.render_csi_dichasus(tx_o, rays_o, rays_d)
-                        loss = sig2mse(predict_rssi, train_label.view(-1))
+                        predict_csi = self.renderer.render_csi_dichasus(tx_o, rays_o, rays_d)
+                        loss = sig2mse(predict_csi, train_label.view(-1))
                     elif self.dataset_type == 'dichasus-fdd':
-                        tx_o, rays_o, rays_d = train_input[:, :512 * 32 * 2], train_input[:, 512 * 32 * 2: 512 * 32 * 2 + 3], \
+                        uplink, rays_o, rays_d = train_input[:, :512 * 32 * 2], train_input[:, 512 * 32 * 2: 512 * 32 * 2 + 3], \
                                                     train_input[:, 512 * 32 * 2+3:]
-                        predict_rssi = self.renderer.render_csi_dichasus_fdd(tx_o, rays_o, rays_d)
-                        loss = sig2mse(predict_rssi, train_label.view(-1))
+                        predict_downlink = self.renderer.render_csi_dichasus_fdd(uplink, rays_o, rays_d)
+                        predict_downlink = torch.concat((predict_downlink.real, predict_downlink.imag), dim=-1)
+                        loss = sig2mse(predict_downlink, train_label)
 
 
                     self.optimizer.zero_grad()
