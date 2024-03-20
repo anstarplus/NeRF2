@@ -135,7 +135,7 @@ class NeRF2_Runner():
         """
         self.logger.info("Start training. Current Iteration:%d", self.current_iteration)
         while self.current_iteration <= self.total_iterations:
-            with tqdm(total=len(self.train_iter), desc=f"Iteration {self.current_iteration}/{self.total_iterations}") as pbar:
+            with (tqdm(total=len(self.train_iter), desc=f"Iteration {self.current_iteration}/{self.total_iterations}") as pbar):
                 for train_input, train_label in self.train_iter:
                     if self.current_iteration > self.total_iterations:
                         break
@@ -154,9 +154,14 @@ class NeRF2_Runner():
                         predict_downlink = self.renderer.render_csi(uplink, rays_o, rays_d)
                         predict_downlink = torch.concat((predict_downlink.real, predict_downlink.imag), dim=-1)
                         loss = sig2mse(predict_downlink, train_label)
-                    elif self.dataset_type == 'dichasus':
+                    elif self.dataset_type == 'dichasus-crosslink':
                         tx_o, rays_o, rays_d = train_input[:, :3], train_input[:, 3:6], train_input[:, 6:]
-                        predict_rssi = self.renderer.render_rssi(tx_o, rays_o, rays_d)
+                        predict_rssi = self.renderer.render_csi_dichasus(tx_o, rays_o, rays_d)
+                        loss = sig2mse(predict_rssi, train_label.view(-1))
+                    elif self.dataset_type == 'dichasus-fdd':
+                        tx_o, rays_o, rays_d = train_input[:, :512 * 32 * 2], train_input[:, 512 * 32 * 2: 512 * 32 * 2 + 3], \
+                                                    train_input[:, 512 * 32 * 2+3:]
+                        predict_rssi = self.renderer.render_csi_dichasus_fdd(tx_o, rays_o, rays_d)
                         loss = sig2mse(predict_rssi, train_label.view(-1))
 
 
@@ -285,10 +290,10 @@ class NeRF2_Runner():
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/dichasus.yml', help='config file path')
+    parser.add_argument('--config', type=str, default='configs/dichasus-crosslink.yml', help='config file path')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--dataset_type', type=str, default='dichasus-cross-link')
+    parser.add_argument('--dataset_type', type=str, default='dichasus-crosslink')
     args = parser.parse_args()
     torch.cuda.set_device(args.gpu)
 
@@ -312,7 +317,7 @@ if __name__ == '__main__':
             worker.eval_network_rssi()
         elif args.dataset_type == 'mimo':
             worker.eval_network_csi()
-        elif args.dataset_type == 'dichasus-cross-link':
-            worker.eval_network_rssi()
-        elif args.dataset_type == 'dichasus-cross-freq':
-            worker.eval_network_rssi()
+        elif args.dataset_type == 'dichasus_crosslink':
+            worker.eval_network_csi()
+        elif args.dataset_type == 'dichasus-fdd':
+            worker.eval_network_csi()

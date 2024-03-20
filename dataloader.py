@@ -14,8 +14,216 @@ from scipy.spatial.transform import Rotation
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from einops import rearrange
+import csv
 
+PI = 3.141592653589793
 
+def change_coordinate_system(pos, center=None, rot_mat=None):
+    """Transforms coordinates by applying an affine transformation
+
+    Input
+    ------
+    pos : [batch_size, 3], float
+        Coordinates
+
+    center : [3], float or `None`
+        Offset vector.
+        Set to `None` for no offset.
+        Defaults to `None`.
+
+    rot_mat : [3,3], float or None
+        Rotation matrix.
+        Set to `None` to not apply a rotation.
+        Defaults to `None`.
+
+    Output
+    -------
+    pos : [batch_size, 3]
+        Rotated and centered coordinates
+    """
+    if center is not None:
+        pos -= center
+    if rot_mat is not None:
+        pos = tf.squeeze(tf.matmul(rot_mat, tf.reshape(pos, [3,1])))
+    return pos
+
+def acos_diff(x, epsilon=1e-7):
+    r"""
+    Implementation of arccos(x) that avoids evaluating the gradient at x
+    -1 or 1 by using straight through estimation, i.e., in the
+    forward pass, x is clipped to (-1, 1), but in the backward pass, x is
+    clipped to (-1 + epsilon, 1 - epsilon).
+
+    Input
+    ------
+    x : any shape, tf.float
+        Value at which to evaluate arccos
+
+    epsilon : tf.float
+        Small backoff to avoid evaluating the gradient at -1 or 1.
+        Defaults to 1e-7.
+
+    Output
+    -------
+     : same shape as x, tf.float
+        arccos(x)
+    """
+
+    x_clip_1 = tf.clip_by_value(x, -1., 1.)
+    x_clip_2 = tf.clip_by_value(x, -1. + epsilon, 1. - epsilon)
+    eps = tf.stop_gradient(x - x_clip_2)
+    x_1 =  x - eps
+    acos_x_1 =  tf.acos(x_1)
+    y = acos_x_1 + tf.stop_gradient(tf.acos(x_clip_1)-acos_x_1)
+    return y
+
+def theta_phi_from_unit_vec(v):
+    r"""
+    Computes zenith and azimuth angles (:math:`\theta,\varphi`)
+    from unit-norm vectors as described in :eq:`theta_phi`
+
+    Input
+    ------
+    v : [...,3], tf.float
+        Tensor with unit-norm vectors in the last dimension
+
+    Output
+    -------
+    theta : [...], tf.float
+        Zenith angles :math:`\theta`
+
+    phi : [...], tf.float
+        Azimuth angles :math:`\varphi`
+    """
+    x = v[...,0]
+    y = v[...,1]
+    z = v[...,2]
+
+    # Clip to ensure numerical stability
+    theta = acos_diff(z)
+    phi = tf.math.atan2(y, x)
+    return theta, phi
+
+def normalize(v):
+    r"""
+    Normalizes ``v`` to unit norm
+
+    Input
+    ------
+    v : [...,3], tf.float
+        Vector
+
+    Output
+    -------
+    : [...,3], tf.float
+        Normalized vector
+
+    : [...], tf.float
+        Norm of the unnormalized vector
+    """
+    norm = tf.norm(v, axis=-1, keepdims=True)
+    n_v = tf.math.divide_no_nan(v, norm)
+    norm = tf.squeeze(norm, axis=-1)
+    return n_v, norm
+
+def rotation_matrix(angles):
+    r"""
+    Computes rotation matrices as defined in :eq:`rotation`
+
+    The closed-form expression in (7.1-4) [TR38901]_ is used.
+
+    Input
+    ------
+    angles : [...,3], tf.float
+        Angles for the rotations [rad].
+        The last dimension corresponds to the angles
+        :math:`(\alpha,\beta,\gamma)` that define
+        rotations about the axes :math:`(z, y, x)`,
+        respectively.
+
+    Output
+    -------
+    : [...,3,3], tf.float
+        Rotation matrices
+    """
+
+    a = angles[...,0]
+    b = angles[...,1]
+    c = angles[...,2]
+    cos_a = tf.cos(a)
+    cos_b = tf.cos(b)
+    cos_c = tf.cos(c)
+    sin_a = tf.sin(a)
+    sin_b = tf.sin(b)
+    sin_c = tf.sin(c)
+
+    r_11 = cos_a*cos_b
+    r_12 = cos_a*sin_b*sin_c - sin_a*cos_c
+    r_13 = cos_a*sin_b*cos_c + sin_a*sin_c
+    r_1 = tf.stack([r_11, r_12, r_13], axis=-1)
+
+    r_21 = sin_a*cos_b
+    r_22 = sin_a*sin_b*sin_c + cos_a*cos_c
+    r_23 = sin_a*sin_b*cos_c - cos_a*sin_c
+    r_2 = tf.stack([r_21, r_22, r_23], axis=-1)
+
+    r_31 = -sin_b
+    r_32 = cos_b*sin_c
+    r_33 = cos_b*cos_c
+    r_3 = tf.stack([r_31, r_32, r_33], axis=-1)
+
+    rot_mat = tf.stack([r_1, r_2, r_3], axis=-2)
+    return rot_mat
+
+def get_coordinate_system():
+    """Get points of interest as well as coordinate transformation parameters
+
+    Output
+    -------
+    center : [3]
+        Offset vector
+
+    rot_mat : [3,3]
+        Rotation matrix
+
+    poi : dict
+        Dictionary with points of interest and their coordinates
+    """
+
+    # Read and parse coordinates of points of interest (POIs)
+    data_dict = {}
+    with open('/home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords/coordinates.csv', mode ='r') as file:
+        csv_file = csv.DictReader(file)
+        for row in csv_file:
+            data_dict[row['Name']] = {k: v for k, v in row.items() if k != 'Name'}
+    # print(data_dict)
+    poi = {}
+    for val in data_dict:
+        pos = data_dict[val]
+        if not pos["South"]=="noLoS":
+            poi[val] = tf.constant([float(pos["West"]),
+                                    float(pos["South"]),
+                                    float(pos["Height"])], tf.float32)
+
+    # Add antenna array position
+    poi["array_1"] = tf.constant([7.480775, -20.9824, 1.39335], tf.float32)
+    poi["array_2"] = tf.constant([-6.390425, 24.440075, 1.4197], tf.float32)
+
+    # Center coordinate system
+    center = poi["AU"] # This is our new origin
+    for p in poi:
+        poi[p] = change_coordinate_system(poi[p], center)
+
+    # Compute rotation matrix such that NWU has coordinates [0, 1, ~0]
+    nwu_hat, _ = normalize(poi["NWU"])
+    theta, phi = theta_phi_from_unit_vec(nwu_hat)
+    rot_mat = tf.squeeze(rotation_matrix(tf.constant([[-phi.numpy()+PI/2, 0, 0]], tf.float32)))
+
+    # Rotate all POIs to match the new coordinate system
+    for p in poi:
+        poi[p] = change_coordinate_system(poi[p], rot_mat=rot_mat)
+
+    return center, rot_mat, poi
 
 # def rssi2amplitude(rssi):
 #     """convert rssi to amplitude
@@ -44,6 +252,7 @@ def amplitude2rssi(amplitude):
 def split_dataset(datadir, ratio=0.8, dataset_type='rfid'):
     """random shuffle train/test set
     """
+    index = []
     if dataset_type == "rfid":
         spectrum_dir = os.path.join(datadir, 'spectrum')
         spt_names = sorted([f for f in os.listdir(spectrum_dir) if f.endswith('.png')])
@@ -56,6 +265,12 @@ def split_dataset(datadir, ratio=0.8, dataset_type='rfid'):
     elif dataset_type == "mimo":
         csi_dir = os.path.join(datadir, 'csidata.pt')
         index = [i for i in range(torch.load(csi_dir).shape[0])]
+        random.shuffle(index)
+    elif dataset_type == "dichasus-crosslink":
+        index = np.arange(0, 3000)
+        random.shuffle(index)
+    elif dataset_type == "dichasus-fdd":
+        index = np.arange(0, 3000)
         random.shuffle(index)
 
     train_len = int(len(index) * ratio)
@@ -369,42 +584,72 @@ class CSI_dataset(Dataset):
         return len(self.dataset_index) * self.n_bs
 
 
-class DichasusDC01Dataset(Dataset):
+class DichasusDC01Dataset_crosslink(Dataset):
     def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None):
         self.datadir = datadir
         self.csidata_dir = os.path.join(datadir, 'dichasus-dc01.tfrecords')
-        self.bs_pos_dir = os.path.join(datadir, 'base_station.yml')
+        self.bs_pos_dir = os.path.join(datadir, 'base-station.yml')
         self.dataset_index = np.loadtxt(indexdir, dtype=int)
         self.beta_res, self.alpha_res = 9, 36  # resulution of rays
 
+        self.calibrate = calibrate
+        self.y_filter = y_filter
+        # get coordinates
+        self.center, self.rot_mat, _ = get_coordinate_system()
 
         # load base station position
         with open(os.path.join(self.bs_pos_dir)) as f:
             bs_pos_dict = yaml.safe_load(f)
-            self.bs_pos = torch.tensor([bs_pos_dict["base_station"]], dtype=torch.float32).squeeze()
-            self.bs_pos = self.bs_pos / scale_worldsize
-            self.n_bs = len(self.bs_pos)
-
-        # load CSI data
-        self.dataset = self._load_dataset(datadir, calibrate, y_filter)
-        self.calibrate = calibrate
-        self.y_filter = y_filter
+            bs_pos = tf.constant(bs_pos_dict["base_station"])
+            bs_pos_1 = change_coordinate_system(bs_pos[0, :], center=self.center, rot_mat=self.rot_mat)
+            bs_pos_2 = change_coordinate_system(bs_pos[1, :], center=self.center, rot_mat=self.rot_mat)
+            bs_pos_1 = torch.from_numpy(bs_pos_1.numpy())
+            bs_pos_2 = torch.from_numpy(bs_pos_2.numpy())
+            bs_pos = torch.stack([bs_pos_1, bs_pos_2]).squeeze()
+            self.bs_pos = bs_pos / scale_worldsize
+            self.n_bs = len(bs_pos)
 
         ## generate rays origin at gateways
         bs_ray_o, bs_rays_d = self.gen_rays_gateways()
-        bs_ray_o = rearrange(bs_ray_o, 'n g c -> n (g c)')   # [n_bs, 1, 3] --> [n_bs, 3]
-        bs_rays_d = rearrange(bs_rays_d, 'n g c -> n (g c)') # [n_bs, n_rays, 3] --> [n_bs, n_rays*3]
+        self.bs_ray_o = rearrange(bs_ray_o, 'n g c -> n (g c)')   # [n_bs, 1, 3] --> [n_bs, 3]
+        self.bs_rays_d = rearrange(bs_rays_d, 'n g c -> n (g c)') # [n_bs, n_rays, 3] --> [n_bs, n_rays*3]
 
-        nn_inputs = torch.tensor(np.zeros((len(self), 3)), dtype=torch.float32)
-        nn_labels = torch.tensor(np.zeros((len(self), 1024*64)), dtype=torch.float32)
+        self._gen_dataset()
+
+    def _gen_dataset(self):
+        # load CSI data
+        self.dataset = self._load_dataset(self.datadir, self.calibrate, self.y_filter)
+        self.dataset = self.dataset.shuffle(seed=42, reshuffle_each_iteration=False, buffer_size=1024).batch(1)
+        dataset_iter = iter(self.dataset)
+
+        NUM_data = 3000
+        nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 3 + 3 + 3 * self.alpha_res * self.beta_res)),
+                                 dtype=torch.float32)  # n_bs = 2
+        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 1024 * 32 * 2)), dtype=torch.float32)
 
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
-        for csi, pos in self.dataset:
-            self.nn_inputs.append(pos.numpy())
-            self.nn_labels.append(csi.numpy())
+        for it_num in tqdm(range(NUM_data)):
+            next_item = next(dataset_iter, None)
+            # Stop if exhausted
+            if next_item is None:
+                break
+            # Retrieve the position
+            csi, pos = next_item
+            pos = torch.from_numpy(pos.numpy()).repeat(self.n_bs, 1).squeeze()
+            # [1, num_tx (2) * num_tx_ant (32) = 64, num_subcarriers = 1024]
+            csi = torch.from_numpy(csi.numpy()).squeeze()
+            csi_real, csi_imag = torch.real(csi), torch.imag(csi)
+            csi_ = torch.cat([csi_real, csi_imag], dim=-1)
+            nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([pos, self.bs_ray_o, self.bs_rays_d],
+                                                                                dim=-1)  # [n_bs, 52+3+3*36*9]
+            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = csi_.view(self.n_bs, 2 * 32 * 1024)
+
+        self.nn_inputs = nn_inputs[self.dataset_index]
+        self.nn_labels = nn_labels[self.dataset_index]
 
     def _load_dataset(self, tfrecord_path, calibrate=True, y_filter=None):
-        raw_dataset = tf.data.TFRecordDataset(self.tfrecord_path)
+        raw_dataset = tf.data.TFRecordDataset(self.csidata_dir)
+
 
         feature_description = {
             "cfo": tf.io.FixedLenFeature([], tf.string, default_value=''),
@@ -417,16 +662,13 @@ class DichasusDC01Dataset(Dataset):
 
         def record_parse_function(proto):
             record = tf.io.parse_single_example(proto, feature_description)
-
-            # Process and convert TensorFlow tensors to NumPy arrays here
-            cfo = tf.io.parse_tensor(record["cfo"], out_type=tf.float32).numpy()
-            csi = tf.io.parse_tensor(record["csi"], out_type=tf.float32).numpy()
-            gt_interp_age_tachy = record["gt-interp-age-tachy"].numpy()
-            pos_tachy = tf.io.parse_tensor(record["pos-tachy"], out_type=tf.float64).numpy()
-            snr = tf.io.parse_tensor(record["snr"], out_type=tf.float32).numpy()
-            time = record["time"].numpy()
-
-            return cfo, csi
+            csi = tf.ensure_shape(tf.io.parse_tensor(record["csi"], out_type=tf.float32), (64, 1024, 2))
+            csi = tf.signal.fftshift(csi, axes=1)
+            csi = tf.complex(csi[..., 0], csi[..., 1])
+            pos = tf.ensure_shape(tf.io.parse_tensor(record["pos-tachy"], out_type=tf.float64), (3))
+            pos = tf.cast(pos, tf.float32)
+            pos = change_coordinate_system(pos, center=self.center, rot_mat=self.rot_mat)
+            return csi, pos
 
         def apply_calibration(csi, pos):
             """Apply STO and CPO calibration"""
@@ -440,15 +682,15 @@ class DichasusDC01Dataset(Dataset):
         dataset = raw_dataset.map(record_parse_function, num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
         if calibrate:
-            calibrate_path = os.path.join(self.datadir, "reftx-offsets-dichasus-dc01.json")
-            with open(calibrate_path, "r") as offsetfile:
+            calibration_file = os.path.join(self.datadir, 'reftx-offsets-dichasus-dc01.json')
+            with open(calibration_file, "r") as offsetfile:
                 offsets = json.load(offsetfile)
-
             dataset = dataset.map(apply_calibration)
 
         if y_filter is not None:
             def position_filter(csi, pos):
-                return tf.logical_and(pos[1] > y_filter[0], pos[1] < y_filter[1])
+                "Limit y-range to certain range to avoid position too close to the receiver"
+                return pos[1] > y_filter[0] and pos[1] < y_filter[1]
 
             dataset = dataset.filter(position_filter)
 
@@ -474,21 +716,73 @@ class DichasusDC01Dataset(Dataset):
         z = radius * torch.sin(betas)
 
         r_d = torch.stack([x, y, z], axis=0).T  # [9*36, 2]
-        r_d = r_d.expand([self.n_bs, self.beta_res * self.alpha_res, 2])  # [n_bs, 9*36, 3]
+        r_d = r_d.expand([self.n_bs, self.beta_res * self.alpha_res, 3])  # [n_bs, 9*36, 3]
         r_o = self.bs_pos.unsqueeze(1) # [n_bs, 1, 2]
         r_o, r_d = r_o.contiguous(), r_d.contiguous()
 
         return r_o, r_d
 
     def __len__(self):
-        return len(self.data)
+        return len(self.nn_inputs)
 
     def __getitem__(self, idx):
-        csi, pos = self.data[idx]
-        # Convert numpy arrays to PyTorch tensors
-        csi_tensor = torch.from_numpy(csi)
-        pos_tensor = torch.from_numpy(pos)
-        return pos_tensor, csi_tensor
+        return self.nn_inputs[idx], self.nn_labels[idx]
+
+class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
+    def __init__(self, datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=None, new_param=None):
+        # Initialize the superclass with some of the same parameters
+        super().__init__(datadir, indexdir, scale_worldsize, calibrate, y_filter)
+
+    def _gen_dataset(self):
+        print("FDD dataset generation")
+        self.dataset = self._load_dataset(self.datadir, self.calibrate, self.y_filter)
+        self.dataset = self.dataset.shuffle(seed=42, reshuffle_each_iteration=False, buffer_size=1024).batch(1)
+        dataset_iter = iter(self.dataset)
+
+        NUM_data = 3000
+        nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 32 * 2 + 3 + 3 * self.alpha_res * self.beta_res)),
+                                 dtype=torch.float32)  # n_bs = 2
+        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 32 * 2)), dtype=torch.float32)
+
+        # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
+        for it_num in tqdm(range(NUM_data)):
+            next_item = next(dataset_iter, None)
+            # Stop if exhausted
+            if next_item is None:
+                break
+            # Retrieve the position
+            csi, pos = next_item
+            pos = torch.from_numpy(pos.numpy()).repeat(self.n_bs, 1).squeeze()
+            # [num_tx (2) * num_tx_ant (32) = 64, num_subcarriers = 1024]
+            csi = torch.from_numpy(csi.numpy()).squeeze()
+            # csi_data = self.normalize_csi(csi)
+            csi_data = csi
+            uplink, downlink = csi[..., :512], csi_data[..., 512:]
+            up_real, up_imag = torch.real(uplink), torch.imag(uplink)
+            down_real, down_imag = torch.real(downlink), torch.imag(downlink)
+            uplink = torch.cat([up_real, up_imag], dim=-1)  # [N*32, 512*2]
+            downlink = torch.cat([down_real, down_imag], dim=-1)  # [N*32, 512*2]
+
+            nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([uplink.view(self.n_bs, 2 * 32 * 512),
+                                                                                 self.bs_ray_o, self.bs_rays_d],
+                                                                                dim=-1)  # [n_bs, 512+3+3*36*9]
+            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = downlink.view(self.n_bs, 2 * 32 * 512)
+
+        self.nn_inputs = nn_inputs
+        self.nn_labels = nn_labels
 
 
-dataset_dict = {"rfid": Spectrum_dataset, "ble": BLE_dataset, "mimo": CSI_dataset, "dichasus": DichasusDC01Dataset}
+
+dataset_dict = {"rfid": Spectrum_dataset, "ble": BLE_dataset, "mimo": CSI_dataset,
+                "dichasus-crosslink": DichasusDC01Dataset_crosslink,
+                "dichasus-fdd": DichasusDC01Dataset_fdd}
+
+
+if __name__ == "__main__":
+    datadir = os.path.join("/home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords")
+    train_index = os.path.join(datadir, "train_index.txt")
+    test_index = os.path.join(datadir, "test_index.txt")
+    if not os.path.exists(train_index) or not os.path.exists(test_index):
+        split_dataset(datadir, ratio=0.8, dataset_type='dichasus-crosslink')
+    # dataset = DichasusDC01Dataset_crosslink(datadir, indexdir, scale_worldsize=1, calibrate=True, y_filter=[-5,5])
+    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 5])
