@@ -2,7 +2,7 @@
 ### Path settings
 path:
   expname: dichasus
-  datadir: /home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords
+  datadir: dataset/dichasus/
   logdir: logs/dichasus/
 
 
@@ -23,7 +23,7 @@ train:
   weight_decay: 5e-5
   T_max: 10000
   eta_min: 1e-6
-  batch_size: 64
+  batch_size: 16
   total_iterations: 70000
   load_ckpt: True
 

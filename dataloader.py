@@ -192,7 +192,7 @@ def get_coordinate_system():
 
     # Read and parse coordinates of points of interest (POIs)
     data_dict = {}
-    with open('/home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords/coordinates.csv', mode ='r') as file:
+    with open('dataset/dichasus/coordinates.csv', mode ='r') as file:
         csv_file = csv.DictReader(file)
         for row in csv_file:
             data_dict[row['Name']] = {k: v for k, v in row.items() if k != 'Name'}
@@ -596,7 +596,9 @@ class DichasusDC01Dataset_crosslink(Dataset):
         self.calibrate = calibrate
         self.y_filter = y_filter
         # get coordinates
+
         self.center, self.rot_mat, _ = get_coordinate_system()
+
 
         # load base station position
         with open(os.path.join(self.bs_pos_dir)) as f:
@@ -743,7 +745,7 @@ class DichasusDC01Dataset_crosslink(Dataset):
         return r_o, r_d
 
     def __len__(self):
-        return len(self.nn_inputs)
+        return len(self.dataset_index) * self.n_bs
 
     def __getitem__(self, idx):
         return self.nn_inputs[idx], self.nn_labels[idx]
@@ -760,9 +762,9 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
         dataset_iter = iter(self.dataset)
 
         NUM_data = self.num_samples
-        nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 2 + 3 + 3 * self.alpha_res * self.beta_res)),
+        nn_inputs = torch.tensor(np.zeros((len(self), 512 * 2 + 3 + 3 * self.alpha_res * self.beta_res)),
                                  dtype=torch.float32)  # n_bs = 2
-        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 512 * 2)), dtype=torch.float32)
+        nn_labels = torch.tensor(np.zeros((len(self), 512 * 2)), dtype=torch.float32)
 
         csi_collection = []
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
@@ -779,22 +781,20 @@ class DichasusDC01Dataset_fdd(DichasusDC01Dataset_crosslink):
             csi_collection.append(csi)
 
         csi_collection = self.normalize_csi(torch.stack(csi_collection, dim=0))
-        for it_num in tqdm(range(NUM_data)):
+        for data_counter, it_num in tqdm(enumerate(self.dataset_index), total=len(self.dataset_index)):
             csi = csi_collection[it_num]
             uplink, downlink = csi[..., :512], csi[..., 512:]
             up_real, up_imag = torch.real(uplink), torch.imag(uplink)
             down_real, down_imag = torch.real(downlink), torch.imag(downlink)
             uplink = torch.cat([up_real, up_imag], dim=-1)  # [64, 512*2]
             downlink = torch.cat([down_real, down_imag], dim=-1)  # [64, 512*2]
-            nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([uplink,
+            nn_inputs[data_counter * self.n_bs: (data_counter + 1) * self.n_bs] = torch.cat([uplink,
                                                                                  self.bs_ray_o, self.bs_rays_d],
                                                                                 dim=-1)  # [n_bs, 512*2+3+3*36*9]
-            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = downlink.view(self.n_bs, 2 * 512)
+            nn_labels[data_counter * self.n_bs: (data_counter + 1) * self.n_bs] = downlink.view(self.n_bs, 2 * 512)
 
-        self.nn_inputs = nn_inputs[self.dataset_index]
-        self.nn_labels = nn_labels[self.dataset_index]
-
-
+        self.nn_inputs = nn_inputs
+        self.nn_labels = nn_labels
 
 dataset_dict = {"rfid": Spectrum_dataset, "ble": BLE_dataset, "mimo": CSI_dataset,
                 "dichasus-crosslink": DichasusDC01Dataset_crosslink,
@@ -802,13 +802,14 @@ dataset_dict = {"rfid": Spectrum_dataset, "ble": BLE_dataset, "mimo": CSI_datase
 
 
 if __name__ == "__main__":
-    datadir = os.path.join("/home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords")
+    datadir = os.path.join("dataset/dichasus/")
     train_index = os.path.join(datadir, "train_index.txt")
     test_index = os.path.join(datadir, "test_index.txt")
     num_samples = 1000
     if not os.path.exists(train_index) or not os.path.exists(test_index):
         split_dataset(datadir, ratio=0.8, dataset_type='dichasus-crosslink', num_samples=num_samples)
-    dataset = DichasusDC01Dataset_crosslink(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5,5],
-                                            num_samples=num_samples)
-    # dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 10],
-    # num_samples=num_samples)
+    #dataset = DichasusDC01Dataset_crosslink(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5,5],
+                                            #num_samples=num_samples)
+    dataset = DichasusDC01Dataset_fdd(datadir, train_index, scale_worldsize=1, calibrate=True, y_filter=[-5, 10],
+    num_samples=num_samples)
+    print("complete")

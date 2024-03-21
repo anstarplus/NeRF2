@@ -101,7 +101,8 @@ class NeRF2_Runner():
                 self.logger.info("Loading test set...")
                 self.test_set = dataset(self.datadir, test_index, self.scale_worldsize)
 
-        self.devices = torch.device(f'cuda:{gpu}')
+        torch.cuda.set_device(gpu)
+        self.devices = torch.device('cuda')
         self.train_iter = DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True, num_workers=0)
         self.test_iter = DataLoader(self.test_set, batch_size=self.batch_size, shuffle=False, num_workers=0)
         self.logger.info("Train set size:%d, Test set size:%d", len(self.train_set), len(self.test_set))
@@ -173,8 +174,8 @@ class NeRF2_Runner():
                         predict_csi = self.renderer.render_csi(tx_o, rays_o, rays_d)
                         loss = sig2mse(predict_csi, train_label.view(-1))
                     elif self.dataset_type == 'dichasus-fdd':
-                        uplink, rays_o, rays_d = train_input[:, :512 * 32 * 2], train_input[:, 512 * 32 * 2: 512 * 32 * 2 + 3], \
-                                                    train_input[:, 512 * 32 * 2+3:]
+                        uplink, rays_o, rays_d = train_input[:, :1024], train_input[:, 1024:1027], \
+                                                    train_input[:, 1027:]
                         predict_downlink = self.renderer.render_csi(uplink, rays_o, rays_d)
                         predict_downlink = torch.concat((predict_downlink.real, predict_downlink.imag), dim=-1)
                         loss = sig2mse(predict_downlink, train_label)

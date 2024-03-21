@@ -2,7 +2,7 @@
 ### Path settings
 path:
   expname: dichasus
-  datadir: /home/anplus/Documents/GitHub/diff-rt-calibration/data/tfrecords
+  datadir: dataset/dichasus/
   logdir: logs/dichasus/
 
 
@@ -11,7 +11,7 @@ render:
   mode: 'csi_dichasus'
   near: 0
   far: 5
-  n_samples: 32
+  n_samples: 24
   scale_worldsize: 1
   num_carriers: 1024
 
@@ -23,7 +23,7 @@ train:
   weight_decay: 5e-5
   T_max: 10000
   eta_min: 1e-6
-  batch_size: 64
+  batch_size: 1
   total_iterations: 70000
   load_ckpt: True
 
@@ -40,5 +40,5 @@ networks:
   multires: {'pts': 10, 'view': 10, 'tx': 1}
   input_dims: {'pts': 3, 'view': 3, 'tx': 3} # pos 3D
   is_embeded: {'pts': True, 'view': True, 'tx': False}
-  attn_output_dims: 1024
-  sig_output_dims: 1024
+  attn_output_dims: 2048
+  sig_output_dims: 2048
