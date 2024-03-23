@@ -314,15 +314,22 @@ class NeRF2_Runner():
 
         all_pred_csi = torch.zeros((n_data, num_carrier), dtype=torch.complex64)
         all_gt_csi = torch.zeros((n_data, num_carrier), dtype=torch.complex64)
+        if cross_link:
+            all_pos = torch.zeros((n_data, 3), dtype=torch.float32)
+        else:
+            all_uplink = torch.zeros((n_data, num_carrier*2), dtype=torch.float32)
         with (torch.no_grad()):
             for idx, (test_input, test_label) in enumerate(self.test_iter):
+                print(idx)
                 test_input, test_label = test_input.to(self.devices), test_label.to(self.devices)
                 if cross_link:
-                    uplink, rays_o, rays_d =test_input[:, :1024], test_input[:, 1024:1027], \
-                                                    test_input[:, 1027:]
+                    uplink, rays_o, rays_d =test_input[:, :3], test_input[:, 3:6], \
+                                                    test_input[:, 6:]
+                    all_pos[idx*self.batch_size:(idx+1)*self.batch_size] = uplink
                 else:
                     uplink, rays_o, rays_d = test_input[:, :num_carrier*2], test_input[:, num_carrier*2:num_carrier*2+3], \
                                             test_input[:, num_carrier*2+3:]
+                    all_uplink[idx*self.batch_size:(idx+1)*self.batch_size] = uplink
 
                 predict_downlink = self.renderer.render_csi(uplink, rays_o, rays_d)  # [B, 26]
                 gt_downlink = test_label[:, :num_carrier] + 1j * test_label[:, num_carrier:]
@@ -335,11 +342,19 @@ class NeRF2_Runner():
         all_pred_csi = rearrange(all_pred_csi, '(n_data n_bs) channel -> n_data n_bs channel', n_bs=n_bs)
         all_gt_csi = rearrange(all_gt_csi, '(n_data n_bs) channel -> n_data n_bs channel', n_bs=n_bs)
         snr = csi2snr(all_pred_csi, all_gt_csi)
+        if cross_link:
+            all_pos = rearrange(all_pos, '(n_data n_bs) channel -> n_data n_bs channel', n_bs=n_bs)
+        else:
+            all_uplink = rearrange(all_uplink, '(n_data n_bs) channel -> n_data n_bs channel', n_bs=n_bs)
         self.logger.info("Median SNR:%.2f", torch.median(snr))
-
-        scio.savemat(os.path.join(self.logdir, self.expname, "result.mat"), {'pred_csi': all_pred_csi.cpu().numpy(),
+        if cross_link:
+            scio.savemat(os.path.join(self.logdir, self.expname, "result_crosslink_nerf2.mat"), {'pred_csi': all_pred_csi.cpu().numpy(),
                                                                                 'gt_csi': all_gt_csi.cpu().numpy(),
-                                                                                'snr': snr.cpu().numpy()})
+                                                                                'snr': snr.cpu().numpy(), 'pos': all_pos.cpu().numpy()})
+        else:
+            scio.savemat(os.path.join(self.logdir, self.expname, "result_fdd_nerf2.mat"), {'pred_csi': all_pred_csi.cpu().numpy(),
+                                                                                'gt_csi': all_gt_csi.cpu().numpy(),
+                                                                                'snr': snr.cpu().numpy(), 'uplink': all_uplink.cpu().numpy()})
 
 
 
