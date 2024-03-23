@@ -1,7 +1,7 @@
 
 ### Path settings
 path:
-  expname: dichasus
+  expname: dichasus-exp5
   datadir: dataset/dichasus/
   logdir: logs/dichasus/
 
@@ -12,7 +12,7 @@ render:
   near: 0
   far: 5
   n_samples: 32
-  scale_worldsize: 1
+  scale_worldsize: 25
   num_carriers: 512
 
 
@@ -23,8 +23,8 @@ train:
   weight_decay: 5e-5
   T_max: 10000
   eta_min: 1e-6
-  batch_size: 16
-  total_iterations: 70000
+  batch_size: 24
+  total_iterations: 210000
   load_ckpt: True
 
   save_freq: 100

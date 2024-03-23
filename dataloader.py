@@ -624,14 +624,15 @@ class DichasusDC01Dataset_crosslink(Dataset):
 
     def _gen_dataset(self):
         # load CSI data
+
         self.dataset = self._load_dataset(self.datadir, self.calibrate, self.y_filter)
         self.dataset = self.dataset.shuffle(seed=42, reshuffle_each_iteration=False, buffer_size=1024).batch(1)
         dataset_iter = iter(self.dataset)
 
         NUM_data = self.num_samples
-        nn_inputs = torch.tensor(np.zeros((NUM_data * self.n_bs, 3 + 3 + 3 * self.alpha_res * self.beta_res)),
+        nn_inputs = torch.tensor(np.zeros((len(self), 3 + 3 + 3 * self.alpha_res * self.beta_res)),
                                  dtype=torch.float32)  # n_bs = 2
-        nn_labels = torch.tensor(np.zeros((NUM_data * self.n_bs, 1024 * 2)), dtype=torch.float32)
+        nn_labels = torch.tensor(np.zeros((len(self), 1024 * 2)), dtype=torch.float32)
         csi_collection = []
         pos_collection = []
         # Convert TensorFlow dataset to list of tuples (csi, pos) for easier access
@@ -649,20 +650,21 @@ class DichasusDC01Dataset_crosslink(Dataset):
             pos_collection.append(pos)
 
         csi_collection = self.normalize_csi(torch.stack(csi_collection, dim=0))
-        for it_num in tqdm(range(NUM_data)):
+        for data_counter, it_num in tqdm(enumerate(self.dataset_index), total=len(self.dataset_index)):
             csi = csi_collection[it_num]
             pos = pos_collection[it_num]
             csi_real, csi_imag = torch.real(csi), torch.imag(csi)
             csi_ = torch.cat([csi_real, csi_imag], dim=-1)
-            nn_inputs[it_num * self.n_bs: (it_num + 1) * self.n_bs] = torch.cat([pos, self.bs_ray_o, self.bs_rays_d],
+            nn_inputs[data_counter * self.n_bs: (data_counter + 1) * self.n_bs] = torch.cat([pos, self.bs_ray_o, self.bs_rays_d],
                                                                                 dim=-1)  # [n_bs, 52+3+3*36*9]
-            nn_labels[it_num * self.n_bs: (it_num + 1) * self.n_bs] = csi_.view(self.n_bs, 2 * 1024)
+            nn_labels[data_counter * self.n_bs: (data_counter + 1) * self.n_bs] = csi_.view(self.n_bs, 2 * 1024)
 
-        self.nn_inputs = nn_inputs[self.dataset_index]
-        self.nn_labels = nn_labels[self.dataset_index]
+        self.nn_inputs = nn_inputs
+        self.nn_labels = nn_labels
 
     def normalize_csi(self, csi):
         self.csi_max = torch.max(abs(csi))
+        print("csi_max", self.csi_max)
         return csi / self.csi_max
 
     def denormalize_csi(self, csi):
