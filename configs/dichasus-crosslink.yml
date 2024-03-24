@@ -1,9 +1,11 @@
 
 ### Path settings
 path:
-  expname: dichasus
-  datadir: dataset/dichasus/
-  logdir: logs/dichasus/
+  expname: dichasus-crosslink-exp1
+  datadir: /scratch/network/za1320/dataset-dichasus/
+  logdir: /scratch/network/za1320/log/nerf2/dichasus/
+  # datadir: dataset/dichasus/
+  # logdir: logs/dichasus/
 
 
 ### rendering settings
@@ -12,7 +14,7 @@ render:
   near: 0
   far: 5
   n_samples: 24
-  scale_worldsize: 1
+  scale_worldsize: 25
   num_carriers: 1024
 
 

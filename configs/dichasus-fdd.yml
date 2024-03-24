@@ -1,9 +1,11 @@
 
 ### Path settings
 path:
-  expname: dichasus-exp5
-  datadir: dataset/dichasus/
-  logdir: logs/dichasus/
+  expname: dichasus-fdd-exp1
+  datadir: /scratch/network/za1320/dataset-dichasus/
+  logdir: /scratch/network/za1320/log/nerf2/dichasus/
+  # datadir: dataset/dichasus/
+  # logdir: logs/dichasus/
 
 
 ### rendering settings
