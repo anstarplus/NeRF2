@@ -318,8 +318,7 @@ class NeRF2_Runner():
             for idx, (test_input, test_label) in enumerate(self.test_iter):
                 test_input, test_label = test_input.to(self.devices), test_label.to(self.devices)
                 if cross_link:
-                    uplink, rays_o, rays_d =test_input[:, :1024], test_input[:, 1024:1027], \
-                                                    test_input[:, 1027:]
+                    uplink, rays_o, rays_d = test_input[:, :3], test_input[:, 3:6], test_input[:, 6:]
                 else:
                     uplink, rays_o, rays_d = test_input[:, :num_carrier*2], test_input[:, num_carrier*2:num_carrier*2+3], \
                                             test_input[:, num_carrier*2+3:]
